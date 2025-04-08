@@ -51,7 +51,11 @@ DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 
+/* 需要更新车辆数据标志位 */
 uint8_t updateFlag = 0;
+/* OBD数据帧定义 */
+uint8_t data[2][OBD_CAN_DLC] = {{OBD_SERVICE_TX_01, OBD_PID_ENGINE_RPM    , OBD_TX_PLACEHOLDER},
+                                {OBD_SERVICE_TX_01, OBD_PID_VEHICLE_SPEED , OBD_TX_PLACEHOLDER}};
 
 /* USER CODE END PV */
 
@@ -106,12 +110,13 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
+  /* 打开CAN外设，及其错误处理 */
   if (OBD_Init(&hcan) != HAL_OK) printf("CAN open failed\n");
-  uint8_t data[2][OBD_CAN_DLC] = {{OBD_SERVICE_TX_01, OBD_PID_ENGINE_RPM    , OBD_TX_PLACEHOLDER},
-                                  {OBD_SERVICE_TX_01, OBD_PID_VEHICLE_SPEED , OBD_TX_PLACEHOLDER}};
+  /* 进行首次数据发送 */
   for (uint8_t i = 0; i < 2; ++i) {
     OBD_TxMessage(data[i]);
   }
+  /* 使能更新数据计时器 */
   HAL_TIM_Base_Start_IT(&htim2);
 
   /* USER CODE END 2 */
@@ -120,21 +125,26 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* 缓存区处理函数，应被频繁调用 */
     OBD_TxBufferProcess();
     OBD_RxBufferProcess();
+    /* 数据更新处理 */
     if (updateFlag) {
       updateFlag = 0;
       uint32_t speed, rpm, canStatus = 0;
+      /* 记录CAN错误码 */
       canStatus |= OBD_GetVehicleStatus(VEHICLE_SPEED, &speed);
       canStatus |= OBD_GetVehicleStatus(ENGINE_RPM, &rpm);
+      /* CAN错误处理 */
       if (canStatus != HAL_CAN_ERROR_NONE) {
-        if (canStatus & HAL_CAN_ERROR_EWG) printf("CAN Warning\n");
-        if (canStatus & HAL_CAN_ERROR_BOF && speed == 0) printf("Car power off\n");
-        else printf("CAN ERROR, please check\n");
+        if (canStatus & HAL_CAN_ERROR_EWG) printf("CAN Warning\n");                   //CAN错误警告处理（错误计数>96）
+        if (canStatus & HAL_CAN_ERROR_BOF && speed == 0) printf("Car power off\n");   //CAN错误离线处理（错误计数>255）
+        else printf("CAN ERROR, please check\n");                                     //其他错误处理
         continue;
       }
-      printf("Engine RPM: %ld\nVehicle Speed: %ld\n\n", rpm, speed);
+      printf("Engine RPM: %ld\nVehicle Speed: %ld\n\n", rpm, speed);                  //呈现车辆参数
     }
+    /* 发送缓存空，执行下批次发送 */
     if (OBD_GetTxBufferState() == BUFFER_EMPTY) {
       for (uint8_t i = 0; i < 2; ++i) {
         OBD_TxMessage(data[i]);
@@ -337,11 +347,13 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/* 利用printf格式化输出UART */
 int _write(int fd, char *ptr, int len) {  
   HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, 0xFFFF);
   return len;
 }
 
+/* 更新车辆数据计时器 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
   if (htim == &htim2) updateFlag = 1;
 }
