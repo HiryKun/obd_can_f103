@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "obd.h"
+#include "bell.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,6 +34,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define OVERSPEED_VALUE1 80
+#define OVERSPEED_VALUE2 100
+#define OVERSPEED_VALUE3 120
 
 /* USER CODE END PD */
 
@@ -44,13 +49,16 @@
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart1;
-DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 
+OBD_VehicleStatusTypeDef vehicleStatus;
+uint8_t overSpeedLevel = 0;
+uint8_t waringFlag[4] = {0};
 /* 需要更新车辆数据标志位 */
 uint8_t updateFlag = 0;
 /* OBD数据帧定义 */
@@ -62,10 +70,10 @@ uint8_t data[2][OBD_CAN_DLC] = {{OBD_SERVICE_TX_01, OBD_PID_ENGINE_RPM    , OBD_
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
 static void MX_CAN_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -104,10 +112,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_CAN_Init();
   MX_USART1_UART_Init();
   MX_TIM2_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 
   /* 打开CAN外设，及其错误处理 */
@@ -118,6 +126,7 @@ int main(void)
   }
   /* 使能更新数据计时器 */
   HAL_TIM_Base_Start_IT(&htim2);
+  BELL_Init(&htim1, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
@@ -128,21 +137,42 @@ int main(void)
     /* 缓存区处理函数，应被频繁调用 */
     OBD_TxBufferProcess();
     OBD_RxBufferProcess();
+    switch (vehicleStatus.speed) {
+      case 0 ... (OVERSPEED_VALUE1 - 1):
+        overSpeedLevel = 0;
+        break;
+      case OVERSPEED_VALUE1 ... (OVERSPEED_VALUE2 - 1):
+        overSpeedLevel = 1;
+        break;
+      case OVERSPEED_VALUE2 ... (OVERSPEED_VALUE3 - 1):
+        overSpeedLevel = 2;
+        break;
+      case OVERSPEED_VALUE3 ... 255:
+        overSpeedLevel = 3;
+        break;
+      default:
+        overSpeedLevel = 0;
+        break;
+    }
+    for (uint8_t i = overSpeedLevel + 1; i <= 3; ++i) {
+      waringFlag[i] = 0;  //清除高于当前速度等级的响铃标志位
+    }
+    if (BELL_GetState() == BELL_FORVER && overSpeedLevel < 3) BELL_Stop();
+    else if (!waringFlag[overSpeedLevel] && overSpeedLevel > 0) {
+      if ((overSpeedLevel == 3 ? BELL_StartForver() : BELL_Start(overSpeedLevel)) == HAL_OK)
+        waringFlag[overSpeedLevel] = 1;
+    }
     /* 数据更新处理 */
     if (updateFlag) {
       updateFlag = 0;
-      uint32_t speed, rpm, canStatus = 0;
-      /* 记录CAN错误码 */
-      canStatus |= OBD_GetVehicleStatus(VEHICLE_SPEED, &speed);
-      canStatus |= OBD_GetVehicleStatus(ENGINE_RPM, &rpm);
-      /* CAN错误处理 */
-      if (canStatus != HAL_CAN_ERROR_NONE) {
-        if (canStatus & HAL_CAN_ERROR_EWG) printf("CAN Warning\n");                   //CAN错误警告处理（错误计数>96）
-        if (canStatus & HAL_CAN_ERROR_BOF && speed == 0) printf("Car power off\n");   //CAN错误离线处理（错误计数>255）
-        else printf("CAN ERROR, please check\n");                                     //其他错误处理
-        continue;
-      }
-      printf("Engine RPM: %ld\nVehicle Speed: %ld\n\n", rpm, speed);                  //呈现车辆参数
+      OBD_GetVehicleStatus(&vehicleStatus);   //获取车辆状态
+      printf("Engine RPM: %d\nVehicle Speed: %d\n\n", vehicleStatus.engineRPM, vehicleStatus.speed);  //呈现车辆参数
+    }
+    /* CAN错误处理 */
+    if (vehicleStatus.canStatus != HAL_CAN_ERROR_NONE) {
+      if (vehicleStatus.canStatus & HAL_CAN_ERROR_BOF && vehicleStatus.speed != 0) printf("Car power off\n"); //CAN错误离线处理（错误计数>255）
+      else if (vehicleStatus.canStatus & HAL_CAN_ERROR_EWG) printf("CAN Warning\n");                 //CAN错误警告处理（错误计数>96）
+      else printf("CAN ERROR, please check\n");   //其他错误处理
     }
     /* 发送缓存空，执行下批次发送 */
     if (OBD_GetTxBufferState() == BUFFER_EMPTY) {
@@ -234,6 +264,81 @@ static void MX_CAN_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 7199;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 9999;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 4000;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -308,22 +413,6 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Channel4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
 
 }
 

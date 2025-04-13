@@ -13,9 +13,9 @@
 #include "obd.h"
 #include <string.h>
 
-uint32_t vehicleStatus[VEHICLE_STATUS_SIZE];
-CAN_HandleTypeDef *hcanOBD;
-uint8_t allowTx = 1;
+static OBD_VehicleStatusTypeDef vehicleStatus;
+static CAN_HandleTypeDef *hcanOBD;
+static uint8_t allowTx = 1;
 static uint32_t lastMailbox = CAN_TX_MAILBOX0;
 static OBD_BufferTypeDef txBuffer, rxBuffer;
 static CAN_TxHeaderTypeDef txHeader = {
@@ -95,6 +95,7 @@ HAL_StatusTypeDef OBD_TxBufferProcess(void) {
 }
 
 HAL_StatusTypeDef OBD_RxBufferProcess(void) {
+    vehicleStatus.canStatus = HAL_CAN_GetError(hcanOBD);
     if (GetBufferState(&rxBuffer, OBD_BUFFER_SIZE) == BUFFER_EMPTY) return HAL_ERROR;
     uint8_t data[OBD_CAN_DLC];
     memcpy(data, rxBuffer.data[rxBuffer.front], OBD_CAN_DLC);
@@ -102,10 +103,10 @@ HAL_StatusTypeDef OBD_RxBufferProcess(void) {
     if (data[1] != OBD_SERVICE_RX_01) return HAL_BUSY;
     switch (data[2]) {
     case OBD_PID_ENGINE_RPM:
-        vehicleStatus[ENGINE_RPM] = (data[3] << 8) | data[4];
+        vehicleStatus.engineRPM = (data[3] << 8) | data[4];
         break;
     case OBD_PID_VEHICLE_SPEED:
-        vehicleStatus[VEHICLE_SPEED] = data[3];
+        vehicleStatus.speed = data[3];
     default:
         return HAL_BUSY;
         break;
@@ -117,9 +118,10 @@ HAL_StatusTypeDef OBD_TxMessage(uint8_t *pData) {
     return Enqueue(&txBuffer, pData, OBD_BUFFER_SIZE);
 }
 
-uint32_t OBD_GetVehicleStatus(OBD_VehicleStatusIndexTypeDef index, uint32_t *pStatus) {
-    if (index < VEHICLE_STATUS_SIZE) *pStatus = vehicleStatus[index];
-    return vehicleStatus[CAN_STATE];
+HAL_StatusTypeDef OBD_GetVehicleStatus(OBD_VehicleStatusTypeDef * pTarget) {
+    if (pTarget == NULL) return HAL_ERROR;
+    memcpy(pTarget, &vehicleStatus, sizeof(vehicleStatus));
+    return HAL_OK;
 }
 
 /*接收中断处理函数*/

@@ -48,6 +48,16 @@ typedef struct {
 } OBD_BufferTypeDef;
 
 /**
+ * @brief 车辆状态结构体
+ * 
+ */
+typedef struct {
+    uint32_t    canStatus;      //CAN状态
+    uint16_t    engineRPM;      //引擎转速
+    uint8_t     speed;          //车辆速度
+} OBD_VehicleStatusTypeDef;
+
+/**
  * @brief 缓存状态枚举类型
  * 
  */
@@ -57,16 +67,6 @@ typedef enum {
     BUFFER_BUSY                 //缓存有数据（队列不空但未满）
 } OBD_BufferStateTypeDef;
 
-/**
- * @brief 车辆状态引索
- * 
- */
-typedef enum {
-    CAN_STATE      = 0x00,     //CAN状态
-    ENGINE_RPM,                 //引擎转速
-    VEHICLE_SPEED,              //车辆速度
-    VEHICLE_STATUS_SIZE         //枚举末尾，用于记录枚举大小
-} OBD_VehicleStatusIndexTypeDef;
 
 /**
  * @brief OBD初始化函数
@@ -124,12 +124,11 @@ HAL_StatusTypeDef OBD_RxBufferProcess(void);
 /**
  * @brief 获取车辆状态
  * 
- * @param index 车辆状态引索，参见 OBD_VehicleStatusIndexTypeDef
- * @param status 返回的车辆状态的指针
- * @return uint32_t CAN错误代码，参见 CAN_Error_Code
+ * @param pTarget 存放车辆状态的结构体指针
+ * @retval HAL_OK 成功获取车辆状态
+ * @retval HAL_ERROR 目标结构体指针为空
  */
-uint32_t OBD_GetVehicleStatus(OBD_VehicleStatusIndexTypeDef index, uint32_t *pStatus);
-
+HAL_StatusTypeDef OBD_GetVehicleStatus(OBD_VehicleStatusTypeDef * pTarget);
 
 /**
  * @brief 发送数据，添加进发送缓存
